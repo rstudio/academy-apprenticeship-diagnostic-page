@@ -21,7 +21,7 @@ CHECKS = [
     {"id": "usersnap_resources", "url": "https://resources.usersnap.com", "label": "Feedback Resources", "category": "third_party"},
     {"id": "wistia", "url": "https://fast.wistia.com", "label": "Video Content", "category": "third_party"},
     # Legacy (scheduled for removal)
-    {"id": "posit_academy", "url": "https://posit.academy", "label": "Old Campsite Domain", "category": "legacy"},
+    {"id": "posit_academy", "url": "https://tidyverse.posit.academy", "label": "Old Campsite Domain (*.posit.academy)", "category": "legacy"},
     {"id": "rsacdn", "url": "https://rsacdn.link", "label": "Academy CDN", "category": "legacy"},
 ]
 
