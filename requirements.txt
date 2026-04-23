@@ -1,0 +1,4 @@
+shiny>=1.5.0
+htmltools>=0.6.0
+uvicorn>=0.38.0
+starlette>=0.50.0
