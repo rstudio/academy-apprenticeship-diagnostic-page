@@ -28,6 +28,6 @@ jobs:
       - name: Deploy to Posit Connect
         run: |
           rsconnect deploy shiny . \
-            --server ${{ secrets.CONNECT_SERVER }} \
+            --server https://pub.academy.posit.team \
             --api-key ${{ secrets.CONNECT_API_KEY }} \
             --title "Academy Apprenticeship Diagnostic"
