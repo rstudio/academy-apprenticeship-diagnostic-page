@@ -1,0 +1,33 @@
+on:
+  workflow_dispatch:
+  push:
+    branches: main
+    paths:
+      - 'app.py'
+      - 'www/**'
+      - 'requirements.txt'
+      - '.github/workflows/publish.yml'
+
+name: Publish Diagnostic Page
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install rsconnect-python
+        run: pip install rsconnect-python
+
+      - name: Deploy to Posit Connect
+        run: |
+          rsconnect deploy shiny . \
+            --server ${{ secrets.CONNECT_SERVER }} \
+            --api-key ${{ secrets.CONNECT_API_KEY }} \
+            --title "Academy Apprenticeship Diagnostic"
