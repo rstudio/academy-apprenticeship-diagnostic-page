@@ -21,7 +21,7 @@ CHECKS = [
     {"id": "usersnap_resources", "url": "https://resources.usersnap.com", "label": "Feedback Resources", "category": "third_party"},
     {"id": "wistia", "url": "https://fast.wistia.com", "label": "Video Content", "category": "third_party"},
     # Legacy (scheduled for removal)
-    {"id": "posit_academy", "url": "https://tidyverse.posit.academy", "label": "Old Campsite Domain (*.posit.academy)", "category": "legacy"},
+    {"id": "posit_academy", "url": "https://tidyverse.posit.academy", "display_domain": "*.posit.academy", "label": "Old Campsite Domain (*.posit.academy)", "category": "legacy"},
     {"id": "rsacdn", "url": "https://rsacdn.link", "label": "Academy CDN", "category": "legacy"},
 ]
 
@@ -131,7 +131,7 @@ def server(input, output, session):
                     )
                 )
                 if check_status not in ("success", "checking"):
-                    failed_domains.append(check["url"])
+                    failed_domains.append(check.get("display_domain", check["url"]))
 
         ui_elements.append(ui.h3("WebSocket Connectivity", class_="category-heading"))
         ui_elements.append(status_card("WebSockets Available", ws_status, ws_value))
