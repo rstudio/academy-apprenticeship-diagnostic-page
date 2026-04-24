@@ -30,4 +30,5 @@ jobs:
           rsconnect deploy shiny . \
             --server https://pub.academy.posit.team \
             --api-key ${{ secrets.CONNECT_API_KEY }} \
+            --app-id 2c9a3552-ad01-4534-a5b2-16df71a1bf86 \
             --title "Academy Apprenticeship Diagnostic"
