@@ -24,7 +24,7 @@ def test_page_loads(page: Page, shiny_app):
     page.goto(shiny_app)
     expect(page.locator("h1")).to_have_text("Network Diagnostic")
     expect(page.locator(".header-subtitle")).to_contain_text(
-        "services required by Posit Academy"
+        "services required by Posit Academy course sites"
     )
     expect(page.locator(".header-logo")).to_be_visible()
 
@@ -40,7 +40,6 @@ def test_category_headings_present(page: Page, shiny_app):
     assert "Core Academy Platform" in texts
     assert "Content Delivery (webR / Quarto Live)" in texts
     assert "Third-Party Services" in texts
-    assert "Legacy (scheduled for removal)" in texts
     assert "WebSocket Connectivity" in texts
 
 
@@ -49,9 +48,9 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     page.goto(shiny_app)
     page.wait_for_selector(".status-item", timeout=5000)
 
-    # 12 domain checks + 1 WebSocket + 1 Current Time = 14
+    # 10 domain checks + 1 WebSocket + 1 Current Time = 12
     status_items = page.locator(".status-item")
-    expect(status_items).to_have_count(14)
+    expect(status_items).to_have_count(12)
 
     expect(page.locator("text=Academy Tutorials")).to_be_visible()
     expect(page.locator("text=Authentication")).to_be_visible()
@@ -63,26 +62,8 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     expect(page.locator("text=Feedback Widget")).to_be_visible()
     expect(page.locator("text=Feedback Resources")).to_be_visible()
     expect(page.locator("text=Video Content")).to_be_visible()
-    expect(page.locator("text=Old Campsite Domain")).to_be_visible()
-    expect(page.locator("text=Academy CDN")).to_be_visible()
     expect(page.locator("text=WebSockets Available")).to_be_visible()
     expect(page.locator("text=Current Time")).to_be_visible()
-
-
-def test_legacy_badges_visible(page: Page, shiny_app):
-    """Test that legacy domain checks show a Legacy badge."""
-    page.goto(shiny_app)
-    page.wait_for_selector(".legacy-badge", timeout=5000)
-
-    badges = page.locator(".legacy-badge")
-    expect(badges).to_have_count(2)
-
-
-def test_legacy_note_visible(page: Page, shiny_app):
-    """Test that the legacy section has an explanatory note."""
-    page.goto(shiny_app)
-    page.wait_for_selector(".legacy-note", timeout=5000)
-    expect(page.locator(".legacy-note")).to_contain_text("phased out")
 
 
 def test_client_side_checks_execute(page: Page, shiny_app):

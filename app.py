@@ -20,16 +20,12 @@ CHECKS = [
     {"id": "usersnap_widget", "url": "https://widget.usersnap.com", "label": "Feedback Widget", "category": "third_party"},
     {"id": "usersnap_resources", "url": "https://resources.usersnap.com", "label": "Feedback Resources", "category": "third_party"},
     {"id": "wistia", "url": "https://fast.wistia.com", "label": "Video Content", "category": "third_party"},
-    # Legacy (scheduled for removal)
-    {"id": "posit_academy", "url": "https://tidyverse.posit.academy", "display_domain": "*.posit.academy", "label": "Old Campsite Domain (*.posit.academy)", "category": "legacy"},
-    {"id": "rsacdn", "url": "https://rsacdn.link", "label": "Academy CDN", "category": "legacy"},
 ]
 
 CATEGORIES = [
     {"id": "core", "title": "Core Academy Platform"},
     {"id": "content", "title": "Content Delivery (webR / Quarto Live)"},
     {"id": "third_party", "title": "Third-Party Services"},
-    {"id": "legacy", "title": "Legacy (scheduled for removal)"},
 ]
 
 app_ui = ui.page_fillable(
@@ -49,9 +45,9 @@ app_ui = ui.page_fillable(
             ui.tags.img(src="logo.svg", alt="Posit Academy", class_="header-logo"),
             ui.h1("Network Diagnostic", class_="header-title"),
             ui.p(
-                "This page checks whether your network can reach the services "
-                "required by Posit Academy tutorials. Please let us know if any "
-                "items below do not show a green check mark.",
+                "This page checks if your network can reach the services "
+                "required by Posit Academy course sites. Please take a moment "
+                "to confirm that every item below shows a green check mark.",
                 class_="header-subtitle",
             ),
             ui.output_ui("status_items"),
@@ -61,7 +57,7 @@ app_ui = ui.page_fillable(
 )
 
 
-def status_card(title, status, value_text=None, legacy=False):
+def status_card(title, status, value_text=None):
     if status == "success":
         icon, status_class = "✓", "status-success"
         display_value = ""
@@ -78,13 +74,9 @@ def status_card(title, status, value_text=None, legacy=False):
     if value_text is not None:
         display_value = value_text
 
-    label_parts = [ui.span(title, class_="status-text")]
-    if legacy:
-        label_parts.append(ui.span("Legacy", class_="legacy-badge"))
-
     return ui.div(
         ui.div(icon, class_=f"status-icon {status_class}"),
-        *label_parts,
+        ui.span(title, class_="status-text"),
         ui.span(display_value, class_="status-value"),
         class_="status-item",
     )
@@ -108,15 +100,6 @@ def server(input, output, session):
             cat_checks = [c for c in CHECKS if c["category"] == cat["id"]]
             ui_elements.append(ui.h3(cat["title"], class_="category-heading"))
 
-            if cat["id"] == "legacy":
-                ui_elements.append(
-                    ui.p(
-                        "These domains are being phased out but are still "
-                        "required for now. Please allowlist them if they fail.",
-                        class_="legacy-note",
-                    )
-                )
-
             for check in cat_checks:
                 check_status = (
                     input[f"{check['id']}_status"]()
@@ -127,7 +110,6 @@ def server(input, output, session):
                     status_card(
                         check["label"],
                         check_status,
-                        legacy=(cat["id"] == "legacy"),
                     )
                 )
                 if check_status not in ("success", "checking"):
@@ -141,6 +123,18 @@ def server(input, output, session):
                 ui.span("Current Time", class_="status-text"),
                 ui.span(current_time, class_="status-value"),
                 class_="status-item",
+            )
+        )
+
+        ui_elements.append(
+            ui.p(
+                "If any items above do not show a green checkmark, please let "
+                "our team know so we can troubleshoot together. Use the "
+                '"Copy Results" button to copy the results of your diagnostic '
+                "tests to your clipboard, then paste that text into an email to ",
+                ui.tags.a("academy@posit.co", href="mailto:academy@posit.co"),
+                ".",
+                class_="footer-note",
             )
         )
 
