@@ -48,9 +48,9 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     page.goto(shiny_app)
     page.wait_for_selector(".status-item", timeout=5000)
 
-    # 10 domain checks + 1 WebSocket + 1 Current Time = 12
+    # 9 domain checks + 1 WebSocket + 1 Current Time = 11
     status_items = page.locator(".status-item")
-    expect(status_items).to_have_count(12)
+    expect(status_items).to_have_count(11)
 
     expect(page.locator("text=Academy Tutorials")).to_be_visible()
     expect(page.locator("text=Authentication")).to_be_visible()
@@ -61,7 +61,6 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     expect(page.locator("text=R Universe Packages")).to_be_visible()
     expect(page.locator("text=Feedback Widget")).to_be_visible()
     expect(page.locator("text=Feedback Resources")).to_be_visible()
-    expect(page.locator("text=Video Content")).to_be_visible()
     expect(page.locator("text=WebSockets Available")).to_be_visible()
     expect(page.locator("text=Current Time")).to_be_visible()
 

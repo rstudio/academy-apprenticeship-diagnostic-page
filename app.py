@@ -19,7 +19,6 @@ CHECKS = [
     # Third-Party Services
     {"id": "usersnap_widget", "url": "https://widget.usersnap.com", "label": "Feedback Widget", "category": "third_party"},
     {"id": "usersnap_resources", "url": "https://resources.usersnap.com", "label": "Feedback Resources", "category": "third_party"},
-    {"id": "wistia", "url": "https://fast.wistia.com", "label": "Video Content", "category": "third_party"},
 ]
 
 CATEGORIES = [
