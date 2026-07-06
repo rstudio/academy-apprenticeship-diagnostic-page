@@ -24,7 +24,24 @@ function copyDiagnosticResults() {
     });
 
     const result = lines.join('\n');
-    navigator.clipboard.writeText(result).then(() => {
+
+    // Also include the "Actions Required" allowlist instructions, if present,
+    // so support emails arrive with the remediation steps attached. Kept as a
+    // separate section (blank-line separated) from the status checklist.
+    let fullText = result;
+    const instructions = document.querySelector('.instructions-container');
+    if (instructions) {
+        const instructionLines = [];
+        instructions.querySelectorAll('h3, p.instructions, li').forEach(el => {
+            const t = el.innerText.trim();
+            if (t) instructionLines.push(t);
+        });
+        if (instructionLines.length) {
+            fullText = result + '\n\n' + instructionLines.join('\n');
+        }
+    }
+
+    navigator.clipboard.writeText(fullText).then(() => {
         const btn = document.getElementById('copy-results-btn');
         if (btn) {
             const original = btn.innerText;

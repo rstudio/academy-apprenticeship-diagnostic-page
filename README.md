@@ -17,9 +17,6 @@ Deployed publicly (no login required) so learners with network issues — and th
 | Content Delivery | `rstudio.r-universe.dev` | R packages |
 | Third-Party | `widget.usersnap.com` | Feedback widget |
 | Third-Party | `resources.usersnap.com` | Feedback resources |
-| Third-Party | `fast.wistia.com` | Video content |
-| Legacy | `posit.academy` | Old campsite domain (being phased out) |
-| Legacy | `rsacdn.link` | Academy CDN (being phased out) |
 
 Additionally checks **WebSocket** connectivity (`wss://echo.websocket.org/`), which is required for interactive Shiny components.
 
