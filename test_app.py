@@ -23,6 +23,15 @@ def truncated_package_bytes() -> bytes:
     return data[: len(data) // 2]
 
 
+def fake_wheel_bytes() -> bytes:
+    """Starts like a zip (which a wheel is) but is not the real wheel."""
+    return b"PK\x03\x04" + os.urandom(200_000)
+
+
+def block_page_bytes() -> bytes:
+    return b"<html><body>Sorry, this file type is not permitted</body></html>"
+
+
 def corrupted_package_bytes() -> bytes:
     """Same length and gzip header, but one byte changed mid-stream."""
     data = bytearray(valid_package_bytes())
@@ -39,6 +48,7 @@ ALL_CHECK_LABELS = [
     "R Universe Package Index",
     "R Universe Package Downloads",
     "Pyodide Runtime (CDN)",
+    "Pyodide Packages (CDN)",
     "Python Package Index",
     "Python Package Downloads",
     "Feedback Widget",
@@ -105,9 +115,9 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     page.goto(shiny_app)
     page.wait_for_selector(".status-item", timeout=5000)
 
-    # 13 domain checks + 1 WebSocket + 1 Current Time = 15
+    # 14 domain checks + 1 WebSocket + 1 Current Time = 16
     status_items = page.locator(".status-item")
-    expect(status_items).to_have_count(15)
+    expect(status_items).to_have_count(16)
 
     for label in ALL_CHECK_LABELS:
         expect(status_row(page, label)).to_be_visible()
@@ -339,6 +349,52 @@ def test_r_universe_download_checked_against_index_hash(page: Page, shiny_app):
         f"r2.ropensci.org should fail on a hash mismatch, got: {css_class}"
     )
     assert status_value(page, "R Universe Package Downloads") == "Download corrupted"
+
+
+@pytest.mark.parametrize(
+    "pattern,label",
+    [
+        ("https://cdn.jsdelivr.net/**/*.whl", "Pyodide Packages (CDN)"),
+        ("https://files.pythonhosted.org/**", "Python Package Downloads"),
+    ],
+    ids=["pyodide-cdn", "pythonhosted"],
+)
+@pytest.mark.parametrize(
+    "body,detail",
+    [
+        (fake_wheel_bytes, "Download corrupted"),
+        (block_page_bytes, "Not a package file"),
+    ],
+    ids=["hash-mismatch", "block-page"],
+)
+def test_python_wheel_checked_against_published_hash(
+    page: Page, shiny_app, pattern, label, body, detail
+):
+    """A wheel that isn't byte-for-byte what was published must go red.
+
+    Both Python package hosts publish each wheel's SHA-256 (the Pyodide lock file
+    and the PyPI JSON API), so a block page and an altered wheel are both caught.
+    """
+    data = body()
+    page.route(
+        pattern,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/octet-stream",
+            headers=CORS,
+            body=data,
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, label)
+    assert "status-error" in css_class, (
+        f"{label} should fail on a bad wheel, got: {css_class}"
+    )
+    assert status_value(page, label) == detail
+
+    page.wait_for_selector(".instructions-container", timeout=5000)
+    assert ".whl" in page.locator(".instructions-container").text_content()
 
 
 def test_image_probe_detects_substituted_block_page(page: Page, shiny_app):

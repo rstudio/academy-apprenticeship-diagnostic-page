@@ -9,6 +9,10 @@ const PACKAGE_TIMEOUT_MS = 30000;
 // the downloads that actually break rather than the smallest one in the index.
 const R_UNIVERSE_PROBE_PACKAGE = 'learnr';
 
+// The Pyodide distribution package the "Pyodide Packages" check downloads. Every
+// pandas tutorial loads it (~3 MB).
+const PYODIDE_PROBE_PACKAGE = 'numpy';
+
 // Checks whose response body another check derives its probe URL from.
 const PARENT_IDS = new Set(
     CONFIG.checks.filter(c => c.derived_from).map(c => c.derived_from)
@@ -23,8 +27,8 @@ const RUNIVERSE_VERSIONS = ['4.8', '4.7', '4.6', '4.5'];
 // Some hosts serve the bytes we care about under content-hashed paths that rotate
 // whenever a package is rebuilt. Rather than pin a URL that will eventually 404
 // and report a false failure, derive it from the parent check's response body.
-// Each deriver returns `{ url, expect }`, where `expect` is optional and is
-// passed to probePackage().
+// Each deriver gets the parent's response body and URL and returns
+// `{ url, expect }`, where `expect` is optional and is passed to probePackage().
 const DERIVERS = {
     // R Universe .tgz downloads 302-redirect to r2.ropensci.org/{sha256}, and the
     // PACKAGES index publishes both the size and the hash, so the download can
@@ -44,13 +48,28 @@ const DERIVERS = {
         return null;
     },
 
+    // Pyodide's lock file names each distribution package's wheel, relative to
+    // the lock file's own URL, with its SHA-256.
+    pyodide_packages: (body, parentUrl) => {
+        const pkg = (JSON.parse(body).packages || {})[PYODIDE_PROBE_PACKAGE];
+        if (!pkg || !pkg.file_name || !pkg.sha256) return null;
+        return {
+            url: new URL(pkg.file_name, parentUrl).href,
+            expect: { sha256: pkg.sha256 },
+        };
+    },
+
     // micropip resolves a package through the PyPI JSON API, then downloads the
-    // wheel from files.pythonhosted.org. Pick the smallest distribution file.
+    // wheel from files.pythonhosted.org. Probe the wheel, which is what micropip
+    // installs, not the sdist.
     pythonhosted: (body) => {
-        const urls = (JSON.parse(body).urls || [])
-            .filter(u => u.url && u.url.indexOf('files.pythonhosted.org') !== -1)
-            .sort((a, b) => (a.size || 0) - (b.size || 0));
-        return urls.length ? { url: urls[0].url } : null;
+        const wheel = (JSON.parse(body).urls || []).find(u =>
+            u.packagetype === 'bdist_wheel' &&
+            u.url && u.url.indexOf('https://files.pythonhosted.org/') === 0 &&
+            u.digests && u.digests.sha256
+        );
+        if (!wheel) return null;
+        return { url: wheel.url, expect: { bytes: wheel.size, sha256: wheel.digests.sha256 } };
     },
 
     // The Usersnap widget loader script names the image assets it will pull from
@@ -290,23 +309,40 @@ async function probePackage(url, expect) {
     }
 
     const bytes = new Uint8Array(result.body);
-    if (bytes.length < 2 || bytes[0] !== 0x1f || bytes[1] !== 0x8b) {
-        console.error('Package probe for ' + url + ' did not return a gzip archive');
+    const format = archiveFormat(bytes);
+    if (!format) {
+        console.error('Package probe for ' + url + ' did not return a package archive');
         return { status: 'error', detail: 'Not a package file' };
     }
 
     let intact;
     if (expect && expect.sha256) {
-        intact = bytes.length === expect.bytes &&
+        intact = (expect.bytes === undefined || bytes.length === expect.bytes) &&
             (!window.crypto || !crypto.subtle || await sha256Hex(result.body) === expect.sha256);
-    } else {
+    } else if (format === 'gzip') {
         intact = await gunzips(result.body);
+    } else {
+        // A zip with no published hash can only be checked by its header.
+        intact = true;
     }
     if (!intact) {
         console.error('Package probe for ' + url + ' arrived altered or incomplete');
         return { status: 'error', detail: 'Download corrupted' };
     }
     return { status: 'success', detail: '' };
+}
+
+// R packages are gzipped tarballs and Python wheels are zip files. A block page
+// or other substitute is neither.
+function archiveFormat(bytes) {
+    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+        return 'gzip';
+    }
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
+        bytes[2] === 0x03 && bytes[3] === 0x04) {
+        return 'zip';
+    }
+    return null;
 }
 
 async function sha256Hex(buffer) {
@@ -369,8 +405,9 @@ async function checkConnectivity() {
         let target = null;
 
         if (parent && parent.status === 'success' && parent.body && deriver) {
+            const parentUrl = checks.find(c => c.id === check.derived_from).probe;
             try {
-                target = deriver(parent.body);
+                target = deriver(parent.body, new URL(parentUrl, location.href).href);
             } catch (error) {
                 console.error('Could not derive a probe URL for ' + check.id + ':', error);
             }

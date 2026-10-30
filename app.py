@@ -17,10 +17,10 @@ WEBSOCKET_ECHO_SERVER = "wss://echo.websocket.org/"
 #   "image"   - load the asset as an <img>. For hosts without CORS we cannot read a
 #               status code, but a proxy that swaps the asset for an HTML block page
 #               will fail to decode, so onerror still catches the block.
-#   "package" - like "cors", but download a full-size R package archive and check
-#               that it arrived intact. Web filters can block or alter downloads by
-#               file type or size, so a host that serves a tiny file fine can still
-#               break the packages tutorials need.
+#   "package" - like "cors", but download a full-size package (an R .tgz or a
+#               Python wheel) and check that it arrived intact. Web filters can
+#               block or alter downloads by file type or size, so a host that
+#               serves a tiny file fine can still break the packages tutorials need.
 #
 # "derived_from" checks discover their probe URL from the parent check's response
 # body. Those hosts serve content under hashed or versioned paths that rotate, so
@@ -106,28 +106,43 @@ CHECKS = [
     },
     # Content Delivery - Python courses (Pyodide)
     {
+        # The package lock Pyodide's loader fetches on startup. The version must
+        # match the `indexURL` pin in the Quarto Live extension's live.lua
+        # (academyTutorials), so bump it here whenever Pyodide is bumped there.
         "id": "cdn_jsdelivr",
         "domain": "cdn.jsdelivr.net",
-        # Version matches the pin in the Quarto Live extension's pyodide loader.
-        "probe": "https://cdn.jsdelivr.net/pyodide/v0.28.1/full/package.json",
+        "probe": "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide-lock.json",
         "method": "cors",
         "label": "Pyodide Runtime (CDN)",
         "category": "content_python",
     },
     {
+        # numpy (~3 MB) from the Pyodide distribution, which every pandas
+        # tutorial loads, checked against the SHA-256 in the lock file.
+        "id": "pyodide_packages",
+        "domain": "cdn.jsdelivr.net",
+        "method": "package",
+        "derived_from": "cdn_jsdelivr",
+        "label": "Pyodide Packages (CDN)",
+        "category": "content_python",
+    },
+    {
+        # A version the tutorials pin, so the wheel it names never changes.
         "id": "pypi",
         "domain": "pypi.org",
-        "probe": "https://pypi.org/pypi/palmerpenguins/json",
+        "probe": "https://pypi.org/pypi/plotnine/0.15.8/json",
         "method": "cors",
         "label": "Python Package Index",
         "category": "content_python",
     },
     {
         # micropip pulls wheels that are not in the Pyodide distribution
-        # (gapminder, palmerpenguins, plotnine) from here.
+        # (plotnine, mizani, palmerpenguins) from here. The probe downloads the
+        # plotnine wheel (~1.6 MB) and checks it against the size and SHA-256
+        # in the PyPI JSON.
         "id": "pythonhosted",
         "domain": "files.pythonhosted.org",
-        "method": "cors",
+        "method": "package",
         "derived_from": "pypi",
         "label": "Python Package Downloads",
         "category": "content_python",
@@ -325,12 +340,13 @@ def server(input, output, session):
             if package_check_failed:
                 instruction_elements.append(
                     ui.p(
-                        "R package downloads were blocked or did not arrive "
+                        "Package downloads were blocked or did not arrive "
                         "intact. Please also make sure your web filter allows "
-                        "file downloads from these domains, including compressed "
-                        ".tgz and .gz archives, without blocking or modifying "
-                        "them. Some filters block downloads by file type or size "
-                        "even when the domain itself is allowed.",
+                        "file downloads from these domains, including package "
+                        "archives (.tgz, .gz, .whl and .zip files), without "
+                        "blocking or modifying them. Some filters block "
+                        "downloads by file type or size even when the domain "
+                        "itself is allowed.",
                         class_="instructions",
                     )
                 )

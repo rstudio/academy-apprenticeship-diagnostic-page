@@ -16,9 +16,10 @@ Deployed publicly (no login required) so learners with network issues — and th
 | R Courses | `repo.r-wasm.org` | webR R packages | `Rcpp` `.tgz` (~2 MB), verified intact |
 | R Courses | `rstudio.r-universe.dev` | R packages absent from repo.r-wasm.org | `PACKAGES` index |
 | R Courses | `r2.ropensci.org` | where R Universe `.tgz` downloads actually redirect to | derived: `learnr` `.tgz` (~1.4 MB), verified against the index's SHA-256 |
-| Python Courses | `cdn.jsdelivr.net` | Pyodide runtime | Pyodide `package.json` |
-| Python Courses | `pypi.org` | packages absent from the Pyodide distribution | JSON API |
-| Python Courses | `files.pythonhosted.org` | where `micropip` downloads wheels from | derived |
+| Python Courses | `cdn.jsdelivr.net` | Pyodide runtime | `pyodide-lock.json` for the pinned Pyodide version |
+| Python Courses | `cdn.jsdelivr.net` | Pyodide distribution packages (pandas, numpy, matplotlib…) | derived: `numpy` wheel (~3 MB), verified against the lock file's SHA-256 |
+| Python Courses | `pypi.org` | packages absent from the Pyodide distribution | JSON API for a pinned `plotnine` release |
+| Python Courses | `files.pythonhosted.org` | where `micropip` downloads wheels from | derived: `plotnine` wheel (~1.6 MB), verified against the PyPI size and SHA-256 |
 | Third-Party | `widget.usersnap.com` | Feedback widget | widget loader |
 | Third-Party | `resources.usersnap.com` | Feedback resources | derived image |
 
@@ -33,19 +34,23 @@ Four probe methods:
 - **`cors`** — `fetch()` the asset and require `response.ok`. Every host checked this way either sends `Access-Control-Allow-Origin` (webR and Pyodide read those bytes cross-origin, so they must) or is same-origin.
 - **`image`** — load the asset as an `<img>`, for the few hosts that send no CORS headers. The status code is unreadable, but a proxy that substitutes an HTML block page for the image fails to decode, so `onerror` still catches the block.
 - **`runiverse_index`** — try several R versions under `/bin/emscripten/contrib/` and take the first non-empty `PACKAGES`, since which one is populated moves with webR's R release.
-- **`package`** — `fetch()` a full-size R package archive and check it arrived intact: it must start with gzip's magic bytes, and then either match the size and SHA-256 published in the index (R Universe) or fully decompress, which checks gzip's own CRC-32 (repo.r-wasm.org, whose index is too large to fetch for one hash).
+- **`package`** — `fetch()` a full-size package (an R `.tgz` or a Python wheel) and check it arrived intact. It must start with gzip's or zip's magic bytes, then match the SHA-256 (and size, where given) published by its index: R Universe `PACKAGES`, Pyodide's lock file, or the PyPI JSON API. repo.r-wasm.org's index is too large to fetch for one hash, so its archive is fully decompressed instead, which checks gzip's own CRC-32.
 
-Package probes time out after 30 seconds and every other check after 12. Each check reports **why** it failed (`HTTP 403`, `Blocked`, `Timed Out`, `Not a package file`, `Download corrupted`) rather than just that it did. The reason is shown in the UI and included in **Copy Results**. When a package check fails, the **Actions Required** section also tells IT to allow `.tgz`/`.gz` file downloads from those domains, not just to allowlist them.
+Package probes time out after 30 seconds and every other check after 12. Each check reports **why** it failed (`HTTP 403`, `Blocked`, `Timed Out`, `Not a package file`, `Download corrupted`) rather than just that it did. The reason is shown in the UI and included in **Copy Results**. When a package check fails, the **Actions Required** section also tells IT to allow package archive downloads (`.tgz`, `.gz`, `.whl`, `.zip`) from those domains, not just to allowlist them.
 
 > [!IMPORTANT]
-> Do **not** go back to probing the smallest package in an index, or to treating a `200` as proof that a package arrived. Web filters can block or alter downloads by file type or size. A learner's network did exactly that: the page showed all green, because a 16 KB package got through, while their graded tutorials failed with `shared object 'Rcpp.so' not found`. The archive-level tests (`test_block_page_served_as_package_reported_as_error`, `test_damaged_package_reported_as_error`, `test_r_universe_download_checked_against_index_hash`) guard this.
+> Do **not** go back to probing the smallest package in an index (R or Python), or to treating a `200` as proof that a package arrived. Web filters can block or alter downloads by file type or size. A learner's network did exactly that: the page showed all green, because a 16 KB package got through, while their graded tutorials failed with `shared object 'Rcpp.so' not found`. The archive-level tests (`test_block_page_served_as_package_reported_as_error`, `test_damaged_package_reported_as_error`, `test_r_universe_download_checked_against_index_hash`, `test_python_wheel_checked_against_published_hash`) guard this.
 
 > [!IMPORTANT]
 > Do **not** reintroduce `mode: 'no-cors'`. An opaque response resolves for *any* HTTP status, so the original version of this page reported a green check mark for 403, 407 (proxy authentication required) and 502 alike. A learner whose corporate proxy was blocking a package host saw all-green and was told their network was fine. `test_http_403_with_cors_reported_as_error` guards this.
 
 ### Derived probes
 
-`r2.ropensci.org`, `files.pythonhosted.org` and `resources.usersnap.com` serve the bytes we care about under content-hashed paths that rotate whenever a package or asset is rebuilt. Pinning a URL would eventually 404 and report a failure the learner does not have, so those probe URLs are discovered from the parent check's response body (the R Universe `PACKAGES` index, the PyPI JSON API, and the Usersnap widget loader respectively). If the parent is unreachable the derived check reports `Not tested` — and its domain is still listed for allowlisting, because a blocked parent almost always means both hosts need it.
+`r2.ropensci.org`, the Pyodide packages on `cdn.jsdelivr.net`, `files.pythonhosted.org` and `resources.usersnap.com` serve the bytes we care about under content-hashed or versioned paths that rotate whenever a package or asset is rebuilt. Pinning a URL would eventually 404 and report a failure the learner does not have, so those probe URLs are discovered from the parent check's response body (the R Universe `PACKAGES` index, Pyodide's lock file, the PyPI JSON API, and the Usersnap widget loader respectively). Each package index also publishes the package's hash, so the derived package checks verify the download too. If the parent is unreachable the derived check reports `Not tested` — and its domain is still listed for allowlisting, because a blocked parent almost always means both hosts need it.
+
+### Pins to keep in sync
+
+The Pyodide version in the `cdn_jsdelivr` probe must match the `indexURL` pin in the Quarto Live extension's `live.lua` in [academyTutorials](https://github.com/rstudio/academyTutorials). When Pyodide is bumped there, bump it here. Otherwise this page checks files that tutorials no longer load. The other pinned files (`Rcpp` in repo.r-wasm.org's 4.5 tree and the `plotnine` release on PyPI) never change, so they need no upkeep. If one disappears, `test_all_checks_succeed_on_open_network` fails.
 
 Originally based on [posit-dev/cape-workshop-diagnostic-page](https://github.com/posit-dev/cape-workshop-diagnostic-page).
 
