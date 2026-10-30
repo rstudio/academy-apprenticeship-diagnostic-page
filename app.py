@@ -9,14 +9,21 @@ www_dir = Path(__file__).parent / "www"
 WEBSOCKET_ECHO_SERVER = "wss://echo.websocket.org/"
 
 # Each check probes a *real asset* the tutorials actually download, not the bare
-# origin, and asserts on the response. Two probe methods are used:
+# origin, and asserts on the response. Four probe methods are used:
 #
-#   "cors"  - fetch() the asset and require response.ok. Only works on hosts that
-#             send Access-Control-Allow-Origin (all of ours do, because webR and
-#             Pyodide read these bytes cross-origin) or that are same-origin.
-#   "image" - load the asset as an <img>. For hosts without CORS we cannot read a
-#             status code, but a proxy that swaps the asset for an HTML block page
-#             will fail to decode, so onerror still catches the block.
+#   "cors"    - fetch() the asset and require response.ok. Only works on hosts that
+#               send Access-Control-Allow-Origin (all of ours do, because webR and
+#               Pyodide read these bytes cross-origin) or that are same-origin.
+#   "image"   - load the asset as an <img>. For hosts without CORS we cannot read a
+#               status code, but a proxy that swaps the asset for an HTML block page
+#               will fail to decode, so onerror still catches the block.
+#   "package" - like "cors", but download a full-size package (an R .tgz or a
+#               Python wheel) and check that it arrived intact. Web filters can
+#               block or alter downloads by file type or size, so a host that
+#               serves a tiny file fine can still break the packages tutorials need.
+#   "runtime" - the same check for the webR and Pyodide runtime files (.wasm,
+#               .zip), which no index publishes a hash for, so the file format's
+#               own structure is checked instead.
 #
 # "derived_from" checks discover their probe URL from the parent check's response
 # body. Those hosts serve content under hashed or versioned paths that rotate, so
@@ -60,18 +67,25 @@ CHECKS = [
     },
     # Content Delivery - R courses (webR / Quarto Live)
     {
+        # webR's R binary (12 MB compressed), which every R tutorial downloads
+        # before it can run anything. The version must match the `baseUrl` pin
+        # in the Quarto Live extension's live.lua (academyTutorials).
         "id": "webr_runtime",
         "domain": "webr.r-wasm.org",
-        "probe": "https://webr.r-wasm.org/latest/webr.mjs",
-        "method": "cors",
+        "probe": "https://webr.r-wasm.org/v0.5.4/R.wasm",
+        "method": "runtime",
         "label": "webR Runtime",
         "category": "content_r",
     },
     {
+        # Rcpp (~2 MB), which every graded tutorial loads as a dependency of
+        # gradethis. It used to be a 16 KB package, which a web filter let through
+        # while blocking the full-size downloads. The 4.5 tree stopped being
+        # rebuilt when webR moved to R 4.6, so this filename does not rotate.
         "id": "webr_packages",
         "domain": "repo.r-wasm.org",
-        "probe": "https://repo.r-wasm.org/bin/emscripten/contrib/4.5/pkgconfig_2.0.3.tgz",
-        "method": "cors",
+        "probe": "https://repo.r-wasm.org/bin/emscripten/contrib/4.5/Rcpp_1.1.1-1.1.tgz",
+        "method": "package",
         "label": "webR Packages",
         "category": "content_r",
     },
@@ -91,35 +105,72 @@ CHECKS = [
         # Allowlisting r-universe without this host makes tutorials hang forever.
         "id": "r2_ropensci",
         "domain": "r2.ropensci.org",
-        "method": "cors",
+        "method": "package",
         "derived_from": "r_universe",
         "label": "R Universe Package Downloads",
         "category": "content_r",
     },
     # Content Delivery - Python courses (Pyodide)
+    #
+    # Every Pyodide URL's version must match the `indexURL` pin in the Quarto
+    # Live extension's live.lua (academyTutorials), so bump all three here
+    # whenever Pyodide is bumped there.
     {
-        "id": "cdn_jsdelivr",
+        # Pyodide's Python binary (~3.4 MB compressed), which every Python
+        # tutorial downloads first.
+        "id": "pyodide_runtime",
         "domain": "cdn.jsdelivr.net",
-        # Version matches the pin in the Quarto Live extension's pyodide loader.
-        "probe": "https://cdn.jsdelivr.net/pyodide/v0.28.1/full/package.json",
-        "method": "cors",
+        "probe": "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.asm.wasm",
+        "method": "runtime",
         "label": "Pyodide Runtime (CDN)",
         "category": "content_python",
     },
     {
+        # A zip, which file-type filters commonly block, and Python can't start
+        # without it.
+        "id": "python_stdlib",
+        "domain": "cdn.jsdelivr.net",
+        "probe": "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/python_stdlib.zip",
+        "method": "runtime",
+        "label": "Python Standard Library (CDN)",
+        "category": "content_python",
+    },
+    {
+        # The package lock Pyodide's loader fetches on startup.
+        "id": "cdn_jsdelivr",
+        "domain": "cdn.jsdelivr.net",
+        "probe": "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide-lock.json",
+        "method": "cors",
+        "label": "Pyodide Package Index (CDN)",
+        "category": "content_python",
+    },
+    {
+        # numpy (~3 MB) from the Pyodide distribution, which every pandas
+        # tutorial loads, checked against the SHA-256 in the lock file.
+        "id": "pyodide_packages",
+        "domain": "cdn.jsdelivr.net",
+        "method": "package",
+        "derived_from": "cdn_jsdelivr",
+        "label": "Pyodide Packages (CDN)",
+        "category": "content_python",
+    },
+    {
+        # A version the tutorials pin, so the wheel it names never changes.
         "id": "pypi",
         "domain": "pypi.org",
-        "probe": "https://pypi.org/pypi/palmerpenguins/json",
+        "probe": "https://pypi.org/pypi/plotnine/0.15.8/json",
         "method": "cors",
         "label": "Python Package Index",
         "category": "content_python",
     },
     {
         # micropip pulls wheels that are not in the Pyodide distribution
-        # (gapminder, palmerpenguins, plotnine) from here.
+        # (plotnine, mizani, palmerpenguins) from here. The probe downloads the
+        # plotnine wheel (~1.6 MB) and checks it against the size and SHA-256
+        # in the PyPI JSON.
         "id": "pythonhosted",
         "domain": "files.pythonhosted.org",
-        "method": "cors",
+        "method": "package",
         "derived_from": "pypi",
         "label": "Python Package Downloads",
         "category": "content_python",
@@ -235,6 +286,7 @@ def server(input, output, session):
         ws_value = "Blocked" if ws_status == "error" else None
 
         failed_domains = []
+        download_check_failed = False
         websocket_failed = ws_status not in ("success", "checking")
 
         ui_elements = []
@@ -254,6 +306,8 @@ def server(input, output, session):
                 )
                 if check_status not in ("success", "checking"):
                     failed_domains.append(check["domain"])
+                    if check["method"] in ("package", "runtime"):
+                        download_check_failed = True
 
         ui_elements.append(ui.h3("WebSocket Connectivity", class_="category-heading"))
         ui_elements.append(status_card("WebSockets Available", ws_status, ws_value))
@@ -307,6 +361,21 @@ def server(input, output, session):
                             class_="instructions",
                         ),
                     ]
+                )
+
+            # Allowlisting the domain alone does not help when the filter is
+            # blocking or rewriting the files themselves, so say so.
+            if download_check_failed:
+                instruction_elements.append(
+                    ui.p(
+                        "Some downloads were blocked or did not arrive intact. "
+                        "Please also make sure your web filter allows file "
+                        "downloads from these domains, including .wasm, .tgz, "
+                        ".gz, .whl and .zip files, without blocking or "
+                        "modifying them. Some filters block downloads by file "
+                        "type or size even when the domain itself is allowed.",
+                        class_="instructions",
+                    )
                 )
 
             if websocket_failed:

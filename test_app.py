@@ -1,12 +1,59 @@
+import gzip
+import io
+import os
+import zipfile
 import pytest
 import subprocess
 import time
 import signal
 from playwright.sync_api import Page, expect
 
-# Longest a check can take before the client gives up (see TIMEOUT_MS in
-# www/script.js), plus room for the 1s render tick.
-CHECK_TIMEOUT_MS = 12000
+# Longest a check can take before the client gives up (DOWNLOAD_TIMEOUT_MS in
+# www/script.js; other checks use a shorter TIMEOUT_MS).
+CHECK_TIMEOUT_MS = 60000
+
+CORS = {"access-control-allow-origin": "*"}
+
+
+def valid_package_bytes() -> bytes:
+    """A well-formed gzip archive that is not the real package."""
+    return gzip.compress(os.urandom(200_000))
+
+
+def truncated_package_bytes() -> bytes:
+    data = valid_package_bytes()
+    return data[: len(data) // 2]
+
+
+def fake_wheel_bytes() -> bytes:
+    """Starts like a zip (which a wheel is) but is not the real wheel."""
+    return b"PK\x03\x04" + os.urandom(200_000)
+
+
+def fake_wasm_bytes() -> bytes:
+    """A real WebAssembly header followed by bytes that are not a module."""
+    return b"\x00asm\x01\x00\x00\x00" + os.urandom(200_000)
+
+
+def truncated_zip_bytes() -> bytes:
+    """A real zip cut off before its end-of-central-directory record."""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for i in range(5):
+            archive.writestr(f"lib/module{i}.py", os.urandom(40_000))
+    data = buffer.getvalue()
+    return data[: len(data) * 2 // 3]
+
+
+def block_page_bytes() -> bytes:
+    return b"<html><body>Sorry, this file type is not permitted</body></html>"
+
+
+def corrupted_package_bytes() -> bytes:
+    """Same length and gzip header, but one byte changed mid-stream."""
+    data = bytearray(valid_package_bytes())
+    data[len(data) // 2] ^= 0xFF
+    return bytes(data)
 
 ALL_CHECK_LABELS = [
     "Academy Tutorials",
@@ -18,6 +65,9 @@ ALL_CHECK_LABELS = [
     "R Universe Package Index",
     "R Universe Package Downloads",
     "Pyodide Runtime (CDN)",
+    "Python Standard Library (CDN)",
+    "Pyodide Package Index (CDN)",
+    "Pyodide Packages (CDN)",
     "Python Package Index",
     "Python Package Downloads",
     "Feedback Widget",
@@ -84,9 +134,9 @@ def test_all_diagnostic_items_present(page: Page, shiny_app):
     page.goto(shiny_app)
     page.wait_for_selector(".status-item", timeout=5000)
 
-    # 13 domain checks + 1 WebSocket + 1 Current Time = 15
+    # 16 domain checks + 1 WebSocket + 1 Current Time = 18
     status_items = page.locator(".status-item")
-    expect(status_items).to_have_count(15)
+    expect(status_items).to_have_count(18)
 
     for label in ALL_CHECK_LABELS:
         expect(status_row(page, label)).to_be_visible()
@@ -234,6 +284,184 @@ def test_http_502_reported_as_error(page: Page, shiny_app):
         f"webR Packages should show error on HTTP 502, got: {css_class}"
     )
     assert status_value(page, "webR Packages") in ("HTTP 502", "Blocked")
+
+
+def test_block_page_served_as_package_reported_as_error(page: Page, shiny_app):
+    """A filter that answers 200 with its own HTML page must not pass.
+
+    This is the case the CORS status check alone cannot see, and the remediation
+    text must say that downloads, not just the domain, need allowing.
+    """
+    page.route(
+        "https://repo.r-wasm.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            headers=CORS,
+            body="<html><body>Sorry, this file type is not permitted</body></html>",
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "webR Packages")
+    assert "status-error" in css_class, (
+        f"webR Packages should fail on a block page, got: {css_class}"
+    )
+    assert status_value(page, "webR Packages") == "Not a package file"
+
+    page.wait_for_selector(".instructions-container", timeout=5000)
+    instructions = page.locator(".instructions-container").text_content()
+    assert "repo.r-wasm.org" in instructions
+    assert ".tgz" in instructions
+
+
+@pytest.mark.parametrize(
+    "body",
+    [truncated_package_bytes, corrupted_package_bytes],
+    ids=["truncated", "corrupted"],
+)
+def test_damaged_package_reported_as_error(page: Page, shiny_app, body):
+    """A package that arrives incomplete or modified must go red.
+
+    repo.r-wasm.org publishes no per-file hash cheaply, so the probe relies on
+    gzip's own CRC-32 trailer. Both damages keep a valid gzip header, so only
+    full decompression can catch them.
+    """
+    data = body()
+    page.route(
+        "https://repo.r-wasm.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/x-tar",
+            headers=CORS,
+            body=data,
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "webR Packages")
+    assert "status-error" in css_class, (
+        f"webR Packages should fail on a damaged archive, got: {css_class}"
+    )
+    assert status_value(page, "webR Packages") == "Download corrupted"
+
+
+def test_r_universe_download_checked_against_index_hash(page: Page, shiny_app):
+    """A well-formed archive whose bytes don't match the index must go red.
+
+    The R Universe index publishes each package's SHA-256, so the probe can
+    catch an altered download even when it is still a valid gzip file.
+    """
+    page.route(
+        "https://r2.ropensci.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/gzip",
+            headers=CORS,
+            body=valid_package_bytes(),
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "R Universe Package Downloads")
+    assert "status-error" in css_class, (
+        f"r2.ropensci.org should fail on a hash mismatch, got: {css_class}"
+    )
+    assert status_value(page, "R Universe Package Downloads") == "Download corrupted"
+
+
+@pytest.mark.parametrize(
+    "pattern,label",
+    [
+        ("https://cdn.jsdelivr.net/**/*.whl", "Pyodide Packages (CDN)"),
+        ("https://files.pythonhosted.org/**", "Python Package Downloads"),
+    ],
+    ids=["pyodide-cdn", "pythonhosted"],
+)
+@pytest.mark.parametrize(
+    "body,detail",
+    [
+        (fake_wheel_bytes, "Download corrupted"),
+        (block_page_bytes, "Not a package file"),
+    ],
+    ids=["hash-mismatch", "block-page"],
+)
+def test_python_wheel_checked_against_published_hash(
+    page: Page, shiny_app, pattern, label, body, detail
+):
+    """A wheel that isn't byte-for-byte what was published must go red.
+
+    Both Python package hosts publish each wheel's SHA-256 (the Pyodide lock file
+    and the PyPI JSON API), so a block page and an altered wheel are both caught.
+    """
+    data = body()
+    page.route(
+        pattern,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/octet-stream",
+            headers=CORS,
+            body=data,
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, label)
+    assert "status-error" in css_class, (
+        f"{label} should fail on a bad wheel, got: {css_class}"
+    )
+    assert status_value(page, label) == detail
+
+    page.wait_for_selector(".instructions-container", timeout=5000)
+    assert ".whl" in page.locator(".instructions-container").text_content()
+
+
+@pytest.mark.parametrize(
+    "pattern,label,body,detail",
+    [
+        ("https://webr.r-wasm.org/**", "webR Runtime",
+         fake_wasm_bytes, "Download corrupted"),
+        ("https://webr.r-wasm.org/**", "webR Runtime",
+         block_page_bytes, "Not a runtime file"),
+        ("https://cdn.jsdelivr.net/**/pyodide.asm.wasm", "Pyodide Runtime (CDN)",
+         fake_wasm_bytes, "Download corrupted"),
+        ("https://cdn.jsdelivr.net/**/python_stdlib.zip", "Python Standard Library (CDN)",
+         truncated_zip_bytes, "Download corrupted"),
+        ("https://cdn.jsdelivr.net/**/python_stdlib.zip", "Python Standard Library (CDN)",
+         block_page_bytes, "Not a runtime file"),
+    ],
+    ids=["webr-invalid-wasm", "webr-block-page", "pyodide-invalid-wasm",
+         "stdlib-truncated", "stdlib-block-page"],
+)
+def test_runtime_download_checked_for_integrity(
+    page: Page, shiny_app, pattern, label, body, detail
+):
+    """A runtime file that isn't intact must go red.
+
+    No index publishes hashes for the runtimes, so the probe checks the format's
+    own structure: a .wasm must pass WebAssembly.validate, and a .zip must end in
+    an end-of-central-directory record that matches its length.
+    """
+    data = body()
+    page.route(
+        pattern,
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/octet-stream",
+            headers=CORS,
+            body=data,
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, label)
+    assert "status-error" in css_class, (
+        f"{label} should fail on a damaged runtime file, got: {css_class}"
+    )
+    assert status_value(page, label) == detail
+
+    page.wait_for_selector(".instructions-container", timeout=5000)
+    assert ".wasm" in page.locator(".instructions-container").text_content()
 
 
 def test_image_probe_detects_substituted_block_page(page: Page, shiny_app):
