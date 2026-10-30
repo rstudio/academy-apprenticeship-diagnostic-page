@@ -9,14 +9,18 @@ www_dir = Path(__file__).parent / "www"
 WEBSOCKET_ECHO_SERVER = "wss://echo.websocket.org/"
 
 # Each check probes a *real asset* the tutorials actually download, not the bare
-# origin, and asserts on the response. Two probe methods are used:
+# origin, and asserts on the response. Three probe methods are used:
 #
-#   "cors"  - fetch() the asset and require response.ok. Only works on hosts that
-#             send Access-Control-Allow-Origin (all of ours do, because webR and
-#             Pyodide read these bytes cross-origin) or that are same-origin.
-#   "image" - load the asset as an <img>. For hosts without CORS we cannot read a
-#             status code, but a proxy that swaps the asset for an HTML block page
-#             will fail to decode, so onerror still catches the block.
+#   "cors"    - fetch() the asset and require response.ok. Only works on hosts that
+#               send Access-Control-Allow-Origin (all of ours do, because webR and
+#               Pyodide read these bytes cross-origin) or that are same-origin.
+#   "image"   - load the asset as an <img>. For hosts without CORS we cannot read a
+#               status code, but a proxy that swaps the asset for an HTML block page
+#               will fail to decode, so onerror still catches the block.
+#   "package" - like "cors", but download a full-size R package archive and check
+#               that it arrived intact. Web filters can block or alter downloads by
+#               file type or size, so a host that serves a tiny file fine can still
+#               break the packages tutorials need.
 #
 # "derived_from" checks discover their probe URL from the parent check's response
 # body. Those hosts serve content under hashed or versioned paths that rotate, so
@@ -68,10 +72,14 @@ CHECKS = [
         "category": "content_r",
     },
     {
+        # Rcpp (~2 MB), which every graded tutorial loads as a dependency of
+        # gradethis. It used to be a 16 KB package, which a web filter let through
+        # while blocking the full-size downloads. The 4.5 tree stopped being
+        # rebuilt when webR moved to R 4.6, so this filename does not rotate.
         "id": "webr_packages",
         "domain": "repo.r-wasm.org",
-        "probe": "https://repo.r-wasm.org/bin/emscripten/contrib/4.5/pkgconfig_2.0.3.tgz",
-        "method": "cors",
+        "probe": "https://repo.r-wasm.org/bin/emscripten/contrib/4.5/Rcpp_1.1.1-1.1.tgz",
+        "method": "package",
         "label": "webR Packages",
         "category": "content_r",
     },
@@ -91,7 +99,7 @@ CHECKS = [
         # Allowlisting r-universe without this host makes tutorials hang forever.
         "id": "r2_ropensci",
         "domain": "r2.ropensci.org",
-        "method": "cors",
+        "method": "package",
         "derived_from": "r_universe",
         "label": "R Universe Package Downloads",
         "category": "content_r",
@@ -235,6 +243,7 @@ def server(input, output, session):
         ws_value = "Blocked" if ws_status == "error" else None
 
         failed_domains = []
+        package_check_failed = False
         websocket_failed = ws_status not in ("success", "checking")
 
         ui_elements = []
@@ -254,6 +263,8 @@ def server(input, output, session):
                 )
                 if check_status not in ("success", "checking"):
                     failed_domains.append(check["domain"])
+                    if check["method"] == "package":
+                        package_check_failed = True
 
         ui_elements.append(ui.h3("WebSocket Connectivity", class_="category-heading"))
         ui_elements.append(status_card("WebSockets Available", ws_status, ws_value))
@@ -307,6 +318,21 @@ def server(input, output, session):
                             class_="instructions",
                         ),
                     ]
+                )
+
+            # Allowlisting the domain alone does not help when the filter is
+            # blocking or rewriting the files themselves, so say so.
+            if package_check_failed:
+                instruction_elements.append(
+                    ui.p(
+                        "R package downloads were blocked or did not arrive "
+                        "intact. Please also make sure your web filter allows "
+                        "file downloads from these domains, including compressed "
+                        ".tgz and .gz archives, without blocking or modifying "
+                        "them. Some filters block downloads by file type or size "
+                        "even when the domain itself is allowed.",
+                        class_="instructions",
+                    )
                 )
 
             if websocket_failed:

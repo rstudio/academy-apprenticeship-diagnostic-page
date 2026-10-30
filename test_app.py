@@ -1,12 +1,33 @@
+import gzip
+import os
 import pytest
 import subprocess
 import time
 import signal
 from playwright.sync_api import Page, expect
 
-# Longest a check can take before the client gives up (see TIMEOUT_MS in
-# www/script.js), plus room for the 1s render tick.
-CHECK_TIMEOUT_MS = 12000
+# Longest a check can take before the client gives up (PACKAGE_TIMEOUT_MS in
+# www/script.js; other checks use a shorter TIMEOUT_MS).
+CHECK_TIMEOUT_MS = 30000
+
+CORS = {"access-control-allow-origin": "*"}
+
+
+def valid_package_bytes() -> bytes:
+    """A well-formed gzip archive that is not the real package."""
+    return gzip.compress(os.urandom(200_000))
+
+
+def truncated_package_bytes() -> bytes:
+    data = valid_package_bytes()
+    return data[: len(data) // 2]
+
+
+def corrupted_package_bytes() -> bytes:
+    """Same length and gzip header, but one byte changed mid-stream."""
+    data = bytearray(valid_package_bytes())
+    data[len(data) // 2] ^= 0xFF
+    return bytes(data)
 
 ALL_CHECK_LABELS = [
     "Academy Tutorials",
@@ -234,6 +255,90 @@ def test_http_502_reported_as_error(page: Page, shiny_app):
         f"webR Packages should show error on HTTP 502, got: {css_class}"
     )
     assert status_value(page, "webR Packages") in ("HTTP 502", "Blocked")
+
+
+def test_block_page_served_as_package_reported_as_error(page: Page, shiny_app):
+    """A filter that answers 200 with its own HTML page must not pass.
+
+    This is the case the CORS status check alone cannot see, and the remediation
+    text must say that downloads, not just the domain, need allowing.
+    """
+    page.route(
+        "https://repo.r-wasm.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="text/html",
+            headers=CORS,
+            body="<html><body>Sorry, this file type is not permitted</body></html>",
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "webR Packages")
+    assert "status-error" in css_class, (
+        f"webR Packages should fail on a block page, got: {css_class}"
+    )
+    assert status_value(page, "webR Packages") == "Not a package file"
+
+    page.wait_for_selector(".instructions-container", timeout=5000)
+    instructions = page.locator(".instructions-container").text_content()
+    assert "repo.r-wasm.org" in instructions
+    assert ".tgz" in instructions
+
+
+@pytest.mark.parametrize(
+    "body",
+    [truncated_package_bytes, corrupted_package_bytes],
+    ids=["truncated", "corrupted"],
+)
+def test_damaged_package_reported_as_error(page: Page, shiny_app, body):
+    """A package that arrives incomplete or modified must go red.
+
+    repo.r-wasm.org publishes no per-file hash cheaply, so the probe relies on
+    gzip's own CRC-32 trailer. Both damages keep a valid gzip header, so only
+    full decompression can catch them.
+    """
+    data = body()
+    page.route(
+        "https://repo.r-wasm.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/x-tar",
+            headers=CORS,
+            body=data,
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "webR Packages")
+    assert "status-error" in css_class, (
+        f"webR Packages should fail on a damaged archive, got: {css_class}"
+    )
+    assert status_value(page, "webR Packages") == "Download corrupted"
+
+
+def test_r_universe_download_checked_against_index_hash(page: Page, shiny_app):
+    """A well-formed archive whose bytes don't match the index must go red.
+
+    The R Universe index publishes each package's SHA-256, so the probe can
+    catch an altered download even when it is still a valid gzip file.
+    """
+    page.route(
+        "https://r2.ropensci.org/**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/gzip",
+            headers=CORS,
+            body=valid_package_bytes(),
+        ),
+    )
+    page.goto(shiny_app)
+
+    css_class = wait_for_resolution(page, "R Universe Package Downloads")
+    assert "status-error" in css_class, (
+        f"r2.ropensci.org should fail on a hash mismatch, got: {css_class}"
+    )
+    assert status_value(page, "R Universe Package Downloads") == "Download corrupted"
 
 
 def test_image_probe_detects_substituted_block_page(page: Page, shiny_app):
