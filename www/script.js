@@ -1,8 +1,9 @@
 const TIMEOUT_MS = 12000;
 
-// Package probes download a few MB on purpose (see probePackage), so give them
-// longer before reporting a slow network as a timeout.
-const PACKAGE_TIMEOUT_MS = 30000;
+// Package and runtime probes download real files on purpose (see probeDownload),
+// up to 12 MB for webR's R.wasm, so give them longer before reporting a slow
+// network as a timeout.
+const DOWNLOAD_TIMEOUT_MS = 60000;
 
 // The R Universe package the r2.ropensci.org check downloads. gradethis depends
 // on it, so every graded tutorial fetches it, and at ~1.4 MB it is the size of
@@ -28,7 +29,7 @@ const RUNIVERSE_VERSIONS = ['4.8', '4.7', '4.6', '4.5'];
 // whenever a package is rebuilt. Rather than pin a URL that will eventually 404
 // and report a false failure, derive it from the parent check's response body.
 // Each deriver gets the parent's response body and URL and returns
-// `{ url, expect }`, where `expect` is optional and is passed to probePackage().
+// `{ url, expect }`, where `expect` is optional and is passed to probeDownload().
 const DERIVERS = {
     // R Universe .tgz downloads 302-redirect to r2.ropensci.org/{sha256}, and the
     // PACKAGES index publishes both the size and the hash, so the download can
@@ -293,57 +294,57 @@ async function probeRuniverseIndex(baseUrl) {
 }
 
 /**
- * Download a package archive and check that it arrived intact.
+ * Download a package or runtime file and check that it arrived intact.
  *
  * Reaching the host is not enough. A web filter can let small files through but
  * block larger ones, answer with its own block page, or strip files out of an
- * archive it scans. A package that arrives altered fails inside the tutorial
- * with a confusing error (a shared object "not found") while every reachability
- * check stays green. So verify the bytes against the published size and
- * SHA-256 when the index provides them, and against gzip's own CRC-32 otherwise.
+ * archive it scans. A file that arrives altered fails inside the tutorial with a
+ * confusing error (a shared object "not found") while every reachability check
+ * stays green. So verify the bytes against the published size and SHA-256 when
+ * an index provides them, and otherwise against the file format's own
+ * structure (see FORMATS).
+ *
+ * `wrongTypeDetail` is reported when the response is not the kind of file
+ * expected at all, which is what a block page looks like.
  */
-async function probePackage(url, expect) {
-    const result = await probeCors(url, 'bytes', PACKAGE_TIMEOUT_MS);
+async function probeDownload(url, expect, wrongTypeDetail) {
+    const result = await probeCors(url, 'bytes', DOWNLOAD_TIMEOUT_MS);
     if (result.status !== 'success') {
         return result;
     }
 
     const bytes = new Uint8Array(result.body);
-    const format = archiveFormat(bytes);
+    const format = FORMATS.find(f => f.magic.every((b, i) => bytes[i] === b));
     if (!format) {
-        console.error('Package probe for ' + url + ' did not return a package archive');
-        return { status: 'error', detail: 'Not a package file' };
+        console.error('Download probe for ' + url + ' returned an unexpected file type');
+        return { status: 'error', detail: wrongTypeDetail };
     }
 
     let intact;
     if (expect && expect.sha256) {
         intact = (expect.bytes === undefined || bytes.length === expect.bytes) &&
             (!window.crypto || !crypto.subtle || await sha256Hex(result.body) === expect.sha256);
-    } else if (format === 'gzip') {
-        intact = await gunzips(result.body);
     } else {
-        // A zip with no published hash can only be checked by its header.
-        intact = true;
+        intact = await format.intact(bytes);
     }
     if (!intact) {
-        console.error('Package probe for ' + url + ' arrived altered or incomplete');
+        console.error('Download probe for ' + url + ' arrived altered or incomplete');
         return { status: 'error', detail: 'Download corrupted' };
     }
     return { status: 'success', detail: '' };
 }
 
-// R packages are gzipped tarballs and Python wheels are zip files. A block page
-// or other substitute is neither.
-function archiveFormat(bytes) {
-    if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
-        return 'gzip';
-    }
-    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
-        bytes[2] === 0x03 && bytes[3] === 0x04) {
-        return 'zip';
-    }
-    return null;
-}
+// The file types tutorials download, identified by their leading bytes, each
+// with the best integrity check its format allows when no hash is published.
+// A block page or other substitute matches none of them.
+const FORMATS = [
+    // R packages (.tgz).
+    { magic: [0x1f, 0x8b], intact: gunzips },
+    // Python wheels and the Python standard library (.whl, .zip).
+    { magic: [0x50, 0x4b, 0x03, 0x04], intact: zipComplete },
+    // The webR and Pyodide runtimes (.wasm).
+    { magic: [0x00, 0x61, 0x73, 0x6d], intact: validWasm },
+];
 
 async function sha256Hex(buffer) {
     const digest = await crypto.subtle.digest('SHA-256', buffer);
@@ -352,19 +353,46 @@ async function sha256Hex(buffer) {
 
 // Decompressing checks gzip's CRC-32 and length trailer, so a truncated or
 // modified archive throws.
-async function gunzips(buffer) {
+async function gunzips(bytes) {
     // Browsers too old to decompress can't run this check. Don't report a
     // failure we can't actually see.
     if (typeof DecompressionStream === 'undefined') {
         return true;
     }
     try {
-        const stream = new Blob([buffer]).stream().pipeThrough(new DecompressionStream('gzip'));
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
         await new Response(stream).arrayBuffer();
         return true;
     } catch (error) {
         return false;
     }
+}
+
+// A zip ends with an end-of-central-directory record (22 bytes plus an optional
+// comment of up to 64 KB) giving the central directory's offset and size, which
+// must end exactly where the record starts. A truncated file has no record, and
+// a padded or spliced one doesn't add up.
+function zipComplete(bytes) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const lowest = Math.max(0, bytes.length - 22 - 0xffff);
+    for (let i = bytes.length - 22; i >= lowest; i--) {
+        if (view.getUint32(i, true) !== 0x06054b50) continue;
+        const size = view.getUint32(i + 12, true);
+        const offset = view.getUint32(i + 16, true);
+        // Zip64 moves the real values elsewhere. Don't fail what we can't read.
+        if (size === 0xffffffff || offset === 0xffffffff) return true;
+        return offset + size === i;
+    }
+    return false;
+}
+
+// Validation walks every section and function body, so a truncated or damaged
+// module fails it.
+function validWasm(bytes) {
+    if (typeof WebAssembly === 'undefined') {
+        return true;
+    }
+    return WebAssembly.validate(bytes);
 }
 
 function runProbe(check, url, expect) {
@@ -375,7 +403,10 @@ function runProbe(check, url, expect) {
         return probeImage(url);
     }
     if (check.method === 'package') {
-        return probePackage(url, expect);
+        return probeDownload(url, expect, 'Not a package file');
+    }
+    if (check.method === 'runtime') {
+        return probeDownload(url, expect, 'Not a runtime file');
     }
     return probeCors(url, PARENT_IDS.has(check.id) ? 'text' : null);
 }
